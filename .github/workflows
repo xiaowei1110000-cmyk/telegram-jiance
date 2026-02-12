@@ -1,0 +1,47 @@
+name: 定时提醒系统
+
+# 触发条件配置 - 必须这样写！
+on:
+  schedule:
+    - cron: '*/3 * * * *'   # 每3分钟自动运行
+  workflow_dispatch:         # 手动触发
+
+jobs:
+  send-reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+          
+      - name: 🤖 发送提醒
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "=================================="
+          echo "✅ 定时提醒系统启动成功"
+          echo "=================================="
+          echo "⏰ 当前时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')"
+          echo "🎯 触发方式: ${{ github.event_name }}"
+          echo ""
+          
+          # 发送测试消息，验证Telegram是否正常
+          echo "📤 发送测试消息到Telegram..."
+          
+          curl -s -X POST \
+            "https://api.telegram.org/bot${TOKEN}/sendMessage" \
+            -d "chat_id=${CHAT_ID}" \
+            -d "text=✅ 定时提醒系统已启动！%0A⏰ 时间: $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')%0A🎯 触发方式: ${{ github.event_name }}"
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Telegram发送成功"
+          else
+            echo "❌ Telegram发送失败，请检查Secrets"
+          fi
+          
+          echo ""
+          echo "=================================="
+          echo "✨ 执行完成"
+          echo "=================================="
