@@ -1,5 +1,5 @@
 {
-  "name": "telegram-reminder",
+  "name": "telegram-jiance",
   "version": "2.0.0",
   "description": "GitHub定时提醒系统 - 每天11:00自动发送Telegram提醒",
   "main": "scripts/send-reminder.js",
@@ -24,6 +24,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/xiaowei1110000-cmyk/telegram-reminder"
+    "url": "https://github.com/xiaowei1110000-cmyk/telegram-jiance"
   }
 }
