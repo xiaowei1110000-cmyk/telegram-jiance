@@ -1,232 +1,73 @@
-name: 定时提醒系统
+name: 定时检查提醒并发送通知
 
-# 触发条件
 on:
   schedule:
-    # 每3分钟运行一次 (UTC时间)
-    - cron: '*/3 * * * *'
-  workflow_dispatch:  # 手动触发 - 这个必须有！
-  push:
-    branches: [ main, master ]
-    paths:
-      - 'reminders.json'
-
-# 权限设置 - 关键！
-permissions:
-  contents: write
-  actions: read
+    - cron: '*/3 * * * *'  # 每3分钟检查一次
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
-  check-and-send:
-    name: 🔔 检查并发送提醒
+  check-reminders:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    
     steps:
-      - name: 📥 1. 检出代码
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 1
-      
-      - name: 🕒 2. 设置北京时间
+
+      - name: Check and Send Reminders
         run: |
-          echo "TZ=Asia/Shanghai" >> $GITHUB_ENV
-          echo "BEIJING_TIME=$(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_ENV
-          echo "TODAY=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
-      
-      - name: 📋 3. 显示调试信息
-        run: |
-          echo "🔧 GitHub Workspace: ${{ github.workspace }}"
-          echo "🔧 GitHub Repository: ${{ github.repository }}"
-          echo "🔧 GitHub Run ID: ${{ github.run_id }}"
-          echo "🔧 当前时间: ${{ env.BEIJING_TIME }}"
-          echo "🔧 今天日期: ${{ env.TODAY }}"
-          
-          # 显示文件列表
-          echo "📁 仓库文件列表:"
-          ls -la
-          
-          # 检查reminders.json是否存在
-          if [ -f "reminders.json" ]; then
-            echo "✅ reminders.json 存在"
-            cat reminders.json | head -20
-          else
-            echo "❌ reminders.json 不存在，创建默认文件"
-            echo '[]' > reminders.json
+          # 读取提醒数据
+          if [ ! -f reminders.json ]; then
+            echo "❌ reminders.json 不存在"
+            exit 0
           fi
-      
-      - name: 🤖 4. 检查并发送Telegram消息
-        id: send_message
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          echo "🔍 开始检查到期提醒..."
-          
-          # 检查Telegram配置
-          if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
-            echo "❌ 错误: TELEGRAM_BOT_TOKEN 未配置"
-            echo "请在 Settings → Secrets and variables → Actions 中添加"
-            exit 1
-          fi
-          
-          if [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "❌ 错误: TELEGRAM_CHAT_ID 未配置"
-            echo "请在 Settings → Secrets and variables → Actions 中添加"
-            exit 1
-          fi
-          
-          echo "✅ Telegram Bot Token: ${TELEGRAM_BOT_TOKEN:0:20}..."
-          echo "✅ Telegram Chat ID: $TELEGRAM_CHAT_ID"
-          
-          # 创建Node.js脚本
-          cat > check.js << 'EOF'
-          const fs = require('fs');
-          const https = require('https');
 
-          // 获取环境变量
-          const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-          const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-          const TODAY = process.env.TODAY;
-          const REPO = process.env.GITHUB_REPOSITORY;
-          const RUN_ID = process.env.GITHUB_RUN_ID;
+          # 获取今天日期 (UTC+8)
+          TODAY=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
+          echo "📅 今天: $TODAY"
 
-          console.log('='.repeat(50));
-          console.log('📅 今天日期:', TODAY);
-          console.log('='.repeat(50));
+          BOT_TOKEN="8239139638:AAGbCCpa6Jei3bviOv7uNjMTRAdxJ_4VXG0"
+          CHAT_ID="-1003549797288"
 
-          // 读取提醒数据
-          let reminders = [];
-          try {
-            if (fs.existsSync('reminders.json')) {
-              const content = fs.readFileSync('reminders.json', 'utf8');
-              reminders = JSON.parse(content);
-              console.log(`📋 成功加载 ${reminders.length} 个提醒`);
-            } else {
-              console.log('📁 reminders.json 不存在，创建空文件');
-              fs.writeFileSync('reminders.json', '[]');
-            }
-          } catch (e) {
-            console.error('❌ 读取文件失败:', e.message);
-            process.exit(1);
-          }
+          UPDATED=false
 
-          // 筛选今天到期的提醒
-          const dueReminders = reminders.filter(r => 
-            r.enabled !== false && 
-            r.nextReminder === TODAY &&
-            r.notified !== true
-          );
+          # 用 jq 遍历提醒
+          LENGTH=$(jq length reminders.json)
+          for i in $(seq 0 $(($LENGTH - 1))); do
+            NAME=$(jq -r ".[$i].name" reminders.json)
+            NEXT=$(jq -r ".[$i].nextReminder" reminders.json)
+            NOTIFIED=$(jq -r ".[$i].notified" reminders.json)
+            ENABLED=$(jq -r ".[$i].enabled" reminders.json)
+            DAYS=$(jq -r ".[$i].days" reminders.json)
 
-          console.log(`🔔 今日到期提醒: ${dueReminders.length} 个`);
+            echo "检查: $NAME | 下次: $NEXT | 已通知: $NOTIFIED"
 
-          if (dueReminders.length === 0) {
-            console.log('✅ 没有需要发送的提醒');
-            process.exit(0);
-          }
+            # 判断是否到期且未通知
+            if [ "$ENABLED" = "true" ] && [ "$NEXT" \<= "$TODAY" ] && [ "$NOTIFIED" != "true" ]; then
+              echo "⏰ 发送提醒: $NAME"
 
-          // 显示即将发送的提醒
-          dueReminders.forEach((r, i) => {
-            console.log(`   ${i+1}. ${r.name} - 到期: ${r.nextReminder}`);
-          });
+              MESSAGE="⏰ *定时提醒到期*%0A%0A📌 *${NAME}*%0A📅 到期日期: ${NEXT}%0A🔄 间隔: ${DAYS}天%0A%0A请及时处理！"
 
-          // 发送Telegram消息
-          function sendMessage(reminder) {
-            return new Promise((resolve, reject) => {
-              // 计算下次提醒日期
-              const nextDate = new Date(TODAY);
-              nextDate.setDate(nextDate.getDate() + reminder.days);
-              const nextYear = nextDate.getFullYear();
-              const nextMonth = String(nextDate.getMonth() + 1).padStart(2, '0');
-              const nextDay = String(nextDate.getDate()).padStart(2, '0');
-              const nextReminder = `${nextYear}-${nextMonth}-${nextDay}`;
+              curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+                -d "chat_id=${CHAT_ID}" \
+                -d "text=${MESSAGE}" \
+                -d "parse_mode=Markdown"
 
-              // 构建消息
-              const message = `🔔 <b>定时提醒通知</b>%0A%0A` +
-                `📌 <b>任务</b>: ${reminder.name}%0A` +
-                `📅 <b>到期日期</b>: ${reminder.nextReminder}%0A` +
-                `⏳ <b>周期</b>: 每 ${reminder.days} 天%0A` +
-                `✅ <b>上次完成</b>: ${reminder.lastUpdated || '无'}%0A` +
-                `🔄 <b>下次提醒</b>: ${nextReminder}%0A%0A` +
-                `⚠️ <b>请及时处理！</b>%0A%0A` +
-                `⏰ 检查时间: ${process.env.BEIJING_TIME}%0A` +
-                `🔗 <a href='https://github.com/${REPO}/actions/runs/${RUN_ID}'>查看运行日志</a>`;
+              # 标记为已通知
+              CURRENT_TIME=$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')
+              jq ".[$i].notified = true | .[$i].lastSentTime = \"$CURRENT_TIME\"" reminders.json > tmp.json && mv tmp.json reminders.json
+              UPDATED=true
 
-              const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage?chat_id=${CHAT_ID}&text=${message}&parse_mode=HTML&disable_web_page_preview=true`;
-              
-              https.get(url, (res) => {
-                let data = '';
-                res.on('data', (chunk) => data += chunk);
-                res.on('end', () => {
-                  try {
-                    const result = JSON.parse(data);
-                    if (result.ok) {
-                      console.log(`✅ 发送成功: ${reminder.name}`);
-                      reminder.notified = true;
-                      reminder.lastSentTime = new Date().toISOString();
-                      resolve(true);
-                    } else {
-                      console.error(`❌ 发送失败: ${reminder.name}`, result.description);
-                      resolve(false);
-                    }
-                  } catch (e) {
-                    reject(e);
-                  }
-                });
-              }).on('error', reject);
-            });
-          }
+              echo "✅ 已发送: $NAME"
+            fi
+          done
 
-          // 依次发送
-          (async () => {
-            let success = 0;
-            for (const reminder of dueReminders) {
-              try {
-                if (await sendMessage(reminder)) success++;
-                await new Promise(r => setTimeout(r, 1000));
-              } catch (e) {
-                console.error(`❌ 错误: ${reminder.name}`, e.message);
-              }
-            }
-            
-            // 保存更新
-            fs.writeFileSync('reminders.json', JSON.stringify(reminders, null, 2));
-            console.log(`💾 已保存更新，成功: ${success}/${dueReminders.length}`);
-            
-            if (success > 0) {
-              fs.writeFileSync('has-updates.txt', 'true');
-            }
-          })().catch(console.error);
-          EOF
-
-          # 执行脚本
-          node check.js
-      
-      - name: 💾 5. 提交更新到仓库
-        if: success()
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # 检查是否有更改
-          git add reminders.json
-          
-          if ! git diff --quiet && ! git diff --staged --quiet; then
-            git commit -m "🤖 自动更新提醒状态 [$(date +'%Y-%m-%d %H:%M:%S')]"
+          # 如果有更新，提交回仓库
+          if [ "$UPDATED" = "true" ]; then
+            git config user.name "GitHub Actions"
+            git config user.email "actions@github.com"
+            git add reminders.json
+            git commit -m "🤖 自动更新通知状态 - $TODAY"
             git push
-            echo "✅ 已提交更新到仓库"
+            echo "📤 已推送更新"
           else
-            echo "ℹ️ 无变化，跳过提交"
+            echo "✅ 无需发送通知"
           fi
-      
-      - name: 📢 6. 发送测试成功通知
-        if: success() && github.event_name == 'workflow_dispatch'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            -d text="✅ GitHub Actions 手动测试成功！%0A⏰ 时间: ${{ env.BEIJING_TIME }}%0A📦 仓库: ${{ github.repository }}" \
-            -d parse_mode="HTML" || echo "发送通知失败"
